@@ -39,13 +39,18 @@ public class NHANESSample implements Serializable {
   // Weighted probability that this sample should be selected relative to the other selected samples
   public double prob;
 
+  public String toString() {
+    return String.format("{%d %d %d %f %f %f %s %f %f}",
+        id, sex, agem, wt, ht, swt, racec, bmi, prob);
+  }
+
   /**
    * Load the NHANES samples from resources.
    * @return A list of samples.
    */
   public static List<NHANESSample> loadSamples() {
     CsvMapper mapper = new CsvMapper();
-    List<NHANESSample> samples = new LinkedList();
+    List<NHANESSample> samples = new LinkedList<NHANESSample>();
     CsvSchema schema = CsvSchema.emptySchema().withHeader();
     String filename = "nhanes_two_year_olds_bmi.csv";
     try {
@@ -74,6 +79,6 @@ public class NHANESSample implements Serializable {
     List<NHANESSample> samples = loadSamples();
     @SuppressWarnings("rawtypes")
     List sampleWeights = samples.stream().map(i -> new Pair(i, i.prob)).collect(toList());
-    return new EnumeratedDistribution(sampleWeights);
+    return new EnumeratedDistribution<NHANESSample>(sampleWeights);
   }
 }

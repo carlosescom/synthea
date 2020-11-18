@@ -43,7 +43,7 @@ public abstract class Exporter {
   
   private static final List<Pair<Person, Long>> deferredExports = 
           Collections.synchronizedList(new LinkedList<>());
-   
+
   /**
    * Runtime configuration of the record exporter.
    */
@@ -51,6 +51,8 @@ public abstract class Exporter {
     
     public int yearsOfHistory;
     public boolean deferExports = false;
+    public boolean terminologyService =
+        !Config.get("generate.terminology_service_url", "").isEmpty();
     private BlockingQueue<String> recordQueue;
     private SupportedFhirVersion fhirVersion;
     
@@ -64,6 +66,7 @@ public abstract class Exporter {
     public ExporterRuntimeOptions(ExporterRuntimeOptions init) {
       yearsOfHistory = init.yearsOfHistory;
       deferExports = init.deferExports;
+      terminologyService = init.terminologyService;
       recordQueue = init.recordQueue;
       fhirVersion = init.fhirVersion;
     }
@@ -144,7 +147,7 @@ public abstract class Exporter {
    * @param person   Patient to export
    * @param stopTime Time at which the simulation stopped
    */
-  protected static void export(Person person, long stopTime) {
+  public static void export(Person person, long stopTime) {
     export(person, stopTime, new ExporterRuntimeOptions());
   }
 
@@ -159,10 +162,15 @@ public abstract class Exporter {
    */
   private static void exportRecord(Person person, String fileTag, long stopTime,
           ExporterRuntimeOptions options) {
+    if (options.terminologyService) {
+      // Resolve any coded values within the record that are specified using a ValueSet URI.
+      ValueSetCodeResolver valueSetCodeResolver = new ValueSetCodeResolver(person);
+      valueSetCodeResolver.resolve();
+    }
 
-    if (Boolean.parseBoolean(Config.get("exporter.fhir_stu3.export"))) {
+    if (Config.getAsBoolean("exporter.fhir_stu3.export")) {
       File outDirectory = getOutputFolder("fhir_stu3", person);
-      if (Boolean.parseBoolean(Config.get("exporter.fhir.bulk_data"))) {
+      if (Config.getAsBoolean("exporter.fhir.bulk_data")) {
         org.hl7.fhir.dstu3.model.Bundle bundle = FhirStu3.convertToFHIR(person, stopTime);
         IParser parser = FhirContext.forDstu3().newJsonParser().setPrettyPrint(false);
         for (org.hl7.fhir.dstu3.model.Bundle.BundleEntryComponent entry : bundle.getEntry()) {
@@ -177,9 +185,9 @@ public abstract class Exporter {
         writeNewFile(outFilePath, bundleJson);
       }
     }
-    if (Boolean.parseBoolean(Config.get("exporter.fhir_dstu2.export"))) {
+    if (Config.getAsBoolean("exporter.fhir_dstu2.export")) {
       File outDirectory = getOutputFolder("fhir_dstu2", person);
-      if (Boolean.parseBoolean(Config.get("exporter.fhir.bulk_data"))) {
+      if (Config.getAsBoolean("exporter.fhir.bulk_data")) {
         ca.uhn.fhir.model.dstu2.resource.Bundle bundle = FhirDstu2.convertToFHIR(person, stopTime);
         IParser parser = FhirContext.forDstu2().newJsonParser().setPrettyPrint(false);
         for (ca.uhn.fhir.model.dstu2.resource.Bundle.Entry entry : bundle.getEntry()) {
@@ -194,9 +202,9 @@ public abstract class Exporter {
         writeNewFile(outFilePath, bundleJson);
       }
     }
-    if (Boolean.parseBoolean(Config.get("exporter.fhir.export"))) {
+    if (Config.getAsBoolean("exporter.fhir.export")) {
       File outDirectory = getOutputFolder("fhir", person);
-      if (Boolean.parseBoolean(Config.get("exporter.fhir.bulk_data"))) {
+      if (Config.getAsBoolean("exporter.fhir.bulk_data")) {
         org.hl7.fhir.r4.model.Bundle bundle = FhirR4.convertToFHIR(person, stopTime);
         IParser parser = FhirContext.forR4().newJsonParser().setPrettyPrint(false);
         for (org.hl7.fhir.r4.model.Bundle.BundleEntryComponent entry : bundle.getEntry()) {
@@ -212,62 +220,62 @@ public abstract class Exporter {
       }
       FhirGroupExporterR4.addPatient((String) person.attributes.get(Person.ID));
     }
-    if (Boolean.parseBoolean(Config.get("exporter.ccda.export"))) {
+    if (Config.getAsBoolean("exporter.ccda.export")) {
       String ccdaXml = CCDAExporter.export(person, stopTime);
       File outDirectory = getOutputFolder("ccda", person);
       Path outFilePath = outDirectory.toPath().resolve(filename(person, fileTag, "xml"));
       writeNewFile(outFilePath, ccdaXml);
     }
-    if (Boolean.parseBoolean(Config.get("exporter.csv.export"))) {
+    if (Config.getAsBoolean("exporter.csv.export")) {
       try {
         CSVExporter.getInstance().export(person, stopTime);
       } catch (IOException e) {
         e.printStackTrace();
       }
     }
-    if (Boolean.parseBoolean(Config.get("exporter.cpcds.export"))) {
+    if (Config.getAsBoolean("exporter.cpcds.export")) {
       try {
         CPCDSExporter.getInstance().export(person, stopTime);
       } catch (IOException e) {
         e.printStackTrace();
       }
     }
-    if (Boolean.parseBoolean(Config.get("exporter.text.export"))) {
+    if (Config.getAsBoolean("exporter.text.export")) {
       try {
         TextExporter.exportAll(person, fileTag, stopTime);
       } catch (IOException e) {
         e.printStackTrace();
       }
     }
-    if (Boolean.parseBoolean(Config.get("exporter.text.per_encounter_export"))) {
+    if (Config.getAsBoolean("exporter.text.per_encounter_export")) {
       try {
         TextExporter.exportEncounter(person, stopTime);
       } catch (IOException e) {
         e.printStackTrace();
       }
     }
-    if (Boolean.parseBoolean(Config.get("exporter.symptoms.csv.export"))) {
+    if (Config.getAsBoolean("exporter.symptoms.csv.export")) {
       try {
         SymptomCSVExporter.getInstance().export(person, stopTime);
       } catch (IOException e) {
         e.printStackTrace();
       }
     }
-    if (Boolean.parseBoolean(Config.get("exporter.symptoms.text.export"))) {
+    if (Config.getAsBoolean("exporter.symptoms.text.export")) {
       try {
         SymptomTextExporter.exportAll(person, fileTag, stopTime);
       } catch (IOException e) {
         e.printStackTrace();
       }
     }
-    if (Boolean.parseBoolean(Config.get("exporter.cdw.export"))) {
+    if (Config.getAsBoolean("exporter.cdw.export")) {
       try {
         CDWExporter.getInstance().export(person, stopTime);
       } catch (IOException e) {
         e.printStackTrace();
       }
     }
-    if (Boolean.parseBoolean(Config.get("exporter.clinical_note.export"))) {
+    if (Config.getAsBoolean("exporter.clinical_note.export")) {
       File outDirectory = getOutputFolder("notes", person);
       Path outFilePath = outDirectory.toPath().resolve(filename(person, fileTag, "txt"));
       String consolidatedNotes = ClinicalNoteExporter.export(person);
@@ -358,20 +366,20 @@ public abstract class Exporter {
 
     // Before we force bulk data to be off...
     try {
-      FhirGroupExporterR4.exportAndSave(generator.stop);
+      FhirGroupExporterR4.exportAndSave(generator, generator.stop);
     } catch (Exception e) {
       e.printStackTrace();
     }
 
     Config.set("exporter.fhir.bulk_data", "false");
     try {
-      HospitalExporterR4.export(generator.stop);
+      HospitalExporterR4.export(generator, generator.stop);
     } catch (Exception e) {
       e.printStackTrace();
     }
 
     try {
-      FhirPractitionerExporterR4.export(generator.stop);
+      FhirPractitionerExporterR4.export(generator, generator.stop);
     } catch (Exception e) {
       e.printStackTrace();
     }
@@ -401,11 +409,11 @@ public abstract class Exporter {
     }
     Config.set("exporter.fhir.bulk_data", bulk);
 
-    if (Boolean.parseBoolean(Config.get("exporter.cost_access_outcomes_report"))) {
+    if (Config.getAsBoolean("exporter.cost_access_outcomes_report")) {
       ReportExporter.export(generator);
     }
 
-    if (Boolean.parseBoolean(Config.get("exporter.prevalence_report"))) {
+    if (Config.getAsBoolean("exporter.prevalence_report")) {
       try {
         PrevalenceReport.export(generator);
       } catch (Exception e) {
@@ -414,7 +422,7 @@ public abstract class Exporter {
       }
     }
 
-    if (Boolean.parseBoolean(Config.get("exporter.custom_report"))) {
+    if (Config.getAsBoolean("exporter.custom_report")) {
       try {
         CustomSqlReport.export(generator);
       } catch (Exception e) {
@@ -423,11 +431,11 @@ public abstract class Exporter {
       }
     }
 
-    if (Boolean.parseBoolean(Config.get("exporter.cdw.export"))) {
+    if (Config.getAsBoolean("exporter.cdw.export")) {
       CDWExporter.getInstance().writeFactTables();
     }
 
-    if (Boolean.parseBoolean(Config.get("exporter.csv.export"))) {
+    if (Config.getAsBoolean("exporter.csv.export")) {
       try {
         CSVExporter.getInstance().exportOrganizationsAndProviders();
         CSVExporter.getInstance().exportPayers();
@@ -607,7 +615,8 @@ public abstract class Exporter {
         Iterator<Encounter> iter = record.encounters.iterator();
         while (iter.hasNext()) {
           Encounter encounter = iter.next();
-          if (encounter.start > deathTime) {
+          if (encounter.start > deathTime
+              && !encounter.codes.contains(DeathModule.DEATH_CERTIFICATION)) {
             iter.remove();
           }
         }
@@ -616,7 +625,8 @@ public abstract class Exporter {
       Iterator<Encounter> iter = person.record.encounters.iterator();
       while (iter.hasNext()) {
         Encounter encounter = iter.next();
-        if (encounter.start > deathTime) {
+        if (encounter.start > deathTime
+            && !encounter.codes.contains(DeathModule.DEATH_CERTIFICATION)) {
           iter.remove();
         }
       }
@@ -639,7 +649,7 @@ public abstract class Exporter {
     folders.add(folderName);
 
     if (person != null
-        && Boolean.parseBoolean(Config.get("exporter.subfolders_by_id_substring"))) {
+        && Config.getAsBoolean("exporter.subfolders_by_id_substring")) {
       String id = (String) person.attributes.get(Person.ID);
 
       folders.add(id.substring(0, 2));
@@ -664,7 +674,7 @@ public abstract class Exporter {
    * @return The filename only (not a path).
    */
   public static String filename(Person person, String tag, String extension) {
-    if (Boolean.parseBoolean(Config.get("exporter.use_uuid_filenames"))) {
+    if (Config.getAsBoolean("exporter.use_uuid_filenames")) {
       return person.attributes.get(Person.ID) + tag + "." + extension;
     } else {
       // ensure unique filenames for now

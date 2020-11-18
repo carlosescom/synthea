@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
+import org.mitre.synthea.helpers.RandomNumberGenerator;
 import org.mitre.synthea.helpers.Utilities;
 import org.mitre.synthea.world.agents.Clinician;
 import org.mitre.synthea.world.agents.Person;
@@ -49,6 +50,11 @@ public class HealthRecord implements Serializable {
     public String code;
     /** The human-readable description of the code. */
     public String display;
+    /**
+     * A ValueSet URI that defines a set of possible codes, one of which should be selected at
+     * random.
+     */
+    public String valueSet;
 
     /**
      * Create a new code.
@@ -80,7 +86,8 @@ public class HealthRecord implements Serializable {
     }
 
     public String toString() {
-      return String.format("%s %s %s", system, code, display);
+      return String
+          .format("system=%s, code=%s, display=%s, valueSet=%s", system, code, display, valueSet);
     }
 
     /**
@@ -295,7 +302,7 @@ public class HealthRecord implements Serializable {
     
     private void readObject(ObjectInputStream ois) throws ClassNotFoundException, IOException {
       ois.defaultReadObject();
-      ArrayList<String> stringifiedGoals = (ArrayList<String>)ois.readObject();
+      ArrayList<String> stringifiedGoals = (ArrayList<String>) ois.readObject();
       Gson gson = Utilities.getGson();
       this.goals = new LinkedHashSet<JsonObject>();
       for (String stringifiedGoal: stringifiedGoals) {
@@ -311,9 +318,9 @@ public class HealthRecord implements Serializable {
     /**
      * Constructor for ImagingStudy HealthRecord Entry.
      */
-    public ImagingStudy(long time, String type) {
+    public ImagingStudy(Person person, long time, String type) {
       super(time, type);
-      this.dicomUid = Utilities.randomDicomUid(0, 0);
+      this.dicomUid = Utilities.randomDicomUid(person, time, 0, 0);
       this.series = new ArrayList<Series>();
     }
 
@@ -402,14 +409,14 @@ public class HealthRecord implements Serializable {
 
     /**
      * Set the human readable form of the UDI for this Person's device.
-     * @param person The person who owns or contains the device.
+     * @param random the random number generator
      */
-    public void generateUDI(Person person) {
-      deviceIdentifier = trimLong(person.random.nextLong(), 14);
+    public void generateUDI(RandomNumberGenerator random) {
+      deviceIdentifier = trimLong(random.randLong(), 14);
       manufactureTime = start - Utilities.convertTime("weeks", 3);
       expirationTime = start + Utilities.convertTime("years", 25);
-      lotNumber = trimLong(person.random.nextLong(), (int) person.rand(4, 20));
-      serialNumber = trimLong(person.random.nextLong(), (int) person.rand(4, 20));
+      lotNumber = trimLong(random.randLong(), (int) random.rand(4, 20));
+      serialNumber = trimLong(random.randLong(), (int) random.rand(4, 20));
 
       udi = "(01)" + deviceIdentifier;
       udi += "(11)" + udiDate(manufactureTime);
@@ -434,10 +441,13 @@ public class HealthRecord implements Serializable {
       return retVal;
     }
   }
-  
-  public class Supply implements Serializable {
+
+  public class Supply extends Entry {
+    public Supply(long start, String type) {
+      super(start, type);
+    }
+
     public int quantity;
-    public Code code;
   }
 
   public enum EncounterType {
@@ -664,7 +674,6 @@ public class HealthRecord implements Serializable {
       encounter = new Encounter(time, EncounterType.WELLNESS.toString());
       encounter.name = "First Wellness";
       encounters.add(encounter);
-      System.out.println("First encounter at " + person.ageInYears(time));
     }
     return encounter;
   }
@@ -910,6 +919,22 @@ public class HealthRecord implements Serializable {
   }
 
   /**
+   * Track the use of a supply in the provision of care for this patient.
+   * @param time Time the supply was used
+   * @param code SNOMED Code to identify the supply
+   * @param quantity Number of this supply used
+   * @return the new Supply entry
+   */
+  public Supply useSupply(long time, Code code, int quantity) {
+    Encounter encounter = currentEncounter(time);
+    Supply supply = new Supply(time, code.display);
+    supply.codes.add(code);
+    supply.quantity = quantity;
+    encounter.supplies.add(supply);
+    return supply;
+  }
+
+  /**
    * Add a new report for the specified time and type, copy the specified number of
    * observations (in reverse order) from the encounter to the new
    * report. If the encounter does not have the specified number of observations then
@@ -965,14 +990,6 @@ public class HealthRecord implements Serializable {
         // Only override the stop time if it is longer than the default.
         if (time > encounter.stop) {
           encounter.stop = time;
-        }
-        // Now, add time for each procedure.
-        long procedureTime;
-        for (Procedure p : encounter.procedures) {
-          procedureTime = (p.stop - p.start);
-          if (procedureTime > 0) {
-            encounter.stop += procedureTime;
-          }
         }
         // Update Costs/Claim infomation.
         encounter.determineCost();
@@ -1151,10 +1168,11 @@ public class HealthRecord implements Serializable {
    * @param series the series associated with the study.
    * @return 
    */
-  public ImagingStudy imagingStudy(long time, String type, List<ImagingStudy.Series> series) {
-    ImagingStudy study = new ImagingStudy(time, type);
+  public ImagingStudy imagingStudy(long time, String type,
+      List<ImagingStudy.Series> series) {
+    ImagingStudy study = new ImagingStudy(this.person, time, type);
     study.series = series;
-    assignImagingStudyDicomUids(study);
+    assignImagingStudyDicomUids(time, study);
     currentEncounter(time).imagingStudies.add(study);
     return study;
   }
@@ -1162,18 +1180,18 @@ public class HealthRecord implements Serializable {
   /**
    * Assigns random DICOM UIDs to each Series and Instance in an imaging study
    * after creation.
-   *
+   * @param time the time of the study.
    * @param study the ImagingStudy to populate with DICOM UIDs.
    */
-  private void assignImagingStudyDicomUids(ImagingStudy study) {
+  private void assignImagingStudyDicomUids(long time, ImagingStudy study) {
 
     int seriesNo = 1;
     for (ImagingStudy.Series series : study.series) {
-      series.dicomUid = Utilities.randomDicomUid(seriesNo, 0);
+      series.dicomUid = Utilities.randomDicomUid(this.person, time, seriesNo, 0);
 
       int instanceNo = 1;
       for (ImagingStudy.Instance instance : series.instances) {
-        instance.dicomUid = Utilities.randomDicomUid(seriesNo, instanceNo);
+        instance.dicomUid = Utilities.randomDicomUid(this.person, time, seriesNo, instanceNo);
         instanceNo += 1;
       }
       seriesNo += 1;

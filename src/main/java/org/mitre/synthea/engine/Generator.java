@@ -28,6 +28,7 @@ import org.mitre.synthea.editors.GrowthDataErrorsEditor;
 import org.mitre.synthea.export.CDWExporter;
 import org.mitre.synthea.export.Exporter;
 import org.mitre.synthea.helpers.Config;
+import org.mitre.synthea.helpers.RandomNumberGenerator;
 import org.mitre.synthea.helpers.TransitionMetrics;
 import org.mitre.synthea.helpers.Utilities;
 import org.mitre.synthea.modules.DeathModule;
@@ -45,13 +46,14 @@ import org.mitre.synthea.world.geography.Location;
 /**
  * Generator creates a population by running the generic modules each timestep per Person.
  */
-public class Generator {
+public class Generator implements RandomNumberGenerator {
 
   public DataStore database;
   public GeneratorOptions options;
   private Random random;
   public long timestep;
   public long stop;
+  public long referenceTime;
   public Map<String, AtomicInteger> stats;
   public Location location;
   private AtomicInteger totalGeneratedPopulation;
@@ -99,9 +101,6 @@ public class Generator {
     public int maxAge = 140;
     public String city;
     public String state;
-    /** When Synthea is used as a standalone library, this directory holds
-     * any locally created modules. */
-    public File localModuleDir; 
     public List<String> enabledModules;
     /** File used to initialize a population. */
     public File initialPopulationSnapshotPath;
@@ -111,6 +110,8 @@ public class Generator {
      *  value of -1 will evolve the population to the current system time.
      */
     public int daysToTravelForward = -1;
+    /** Reference Time when to start Synthea. By default equal to the current system time. */
+    public long referenceTime = seed;
   }
   
   /**
@@ -153,7 +154,6 @@ public class Generator {
    */
   public Generator(GeneratorOptions o) {
     this(o, new Exporter.ExporterRuntimeOptions());
-    init();
   }
   
   /**
@@ -194,20 +194,21 @@ public class Generator {
       options.state = DEFAULT_STATE;
     }
     int stateIndex = Location.getIndex(options.state);
-    if (Boolean.parseBoolean(Config.get("exporter.cdw.export"))) {
+    if (Config.getAsBoolean("exporter.cdw.export")) {
       CDWExporter.getInstance().setKeyStart((stateIndex * 1_000_000) + 1);
     }
 
     this.random = new Random(options.seed);
     this.timestep = Long.parseLong(Config.get("generate.timestep"));
     this.stop = System.currentTimeMillis();
+    this.referenceTime = options.referenceTime;
 
     this.location = new Location(options.state, options.city);
 
     this.logLevel = Config.get("generate.log_patients.detail", "simple");
 
-    this.onlyDeadPatients = Boolean.parseBoolean(Config.get("generate.only_dead_patients"));
-    this.onlyAlivePatients = Boolean.parseBoolean(Config.get("generate.only_alive_patients"));
+    this.onlyDeadPatients = Config.getAsBoolean("generate.only_dead_patients");
+    this.onlyAlivePatients = Config.getAsBoolean("generate.only_alive_patients");
     //If both values are set to true, then they are both set back to the default
     if (this.onlyDeadPatients && this.onlyAlivePatients) {
       Config.set("generate.only_dead_patients", "false");
@@ -216,7 +217,7 @@ public class Generator {
       this.onlyAlivePatients = false;
     }
 
-    this.onlyVeterans = Boolean.parseBoolean(Config.get("generate.veteran_population_override"));
+    this.onlyVeterans = Config.getAsBoolean("generate.veteran_population_override");
     this.totalGeneratedPopulation = new AtomicInteger(0);
     this.stats = Collections.synchronizedMap(new HashMap<String, AtomicInteger>());
     this.modulePredicate = getModulePredicate();
@@ -224,8 +225,7 @@ public class Generator {
     stats.put("alive", new AtomicInteger(0));
     stats.put("dead", new AtomicInteger(0));
 
-    if (Boolean.parseBoolean(
-          Config.get("generate.track_detailed_transition_metrics", "false"))) {
+    if (Config.getAsBoolean("generate.track_detailed_transition_metrics", false)) {
       this.metrics = new TransitionMetrics();
     }
 
@@ -234,9 +234,6 @@ public class Generator {
     // Initialize Payers
     Payer.loadPayers(location);
     // ensure modules load early
-    if (options.localModuleDir != null) {
-      Module.addModules(options.localModuleDir);
-    }
     List<String> coreModuleNames = getModuleNames(Module.getModules(path -> false));
     List<String> moduleNames = getModuleNames(Module.getModules(modulePredicate)); 
     Costs.loadCostData(); // ensure cost data loads early
@@ -248,8 +245,10 @@ public class Generator {
       locationName = options.city + ", " + options.state;
     }
     System.out.println("Running with options:");
-    System.out.println(String.format("Population: %d\nSeed: %d\nProvider Seed:%d\nLocation: %s",
-        options.population, options.seed, options.clinicianSeed, locationName));
+    System.out.println(String.format(
+        "Population: %d\nSeed: %d\nProvider Seed:%d\nReference Time: %d\nLocation: %s",
+        options.population, options.seed, options.clinicianSeed, options.referenceTime,
+        locationName));
     System.out.println(String.format("Min Age: %d\nMax Age: %d",
         options.minAge, options.maxAge));
     if (options.gender != null) {
@@ -262,8 +261,7 @@ public class Generator {
       System.out.println(String.format("       > [%d loaded]", moduleNames.size()));
     }
 
-    if (Boolean.parseBoolean(
-        Config.get("growtherrors", "false"))) {
+    if (Config.getAsBoolean("growtherrors", false)) {
       HealthRecordEditors hrm = HealthRecordEditors.getInstance();
       hrm.registerEditor(new GrowthDataErrorsEditor());
     }
@@ -292,7 +290,8 @@ public class Generator {
       try {
         fis = new FileInputStream(options.initialPopulationSnapshotPath);
         ObjectInputStream ois = new ObjectInputStream(fis);
-        initialPopulation = (List<Person>)ois.readObject();
+        initialPopulation = (List<Person>) ois.readObject();
+        ois.close();
       } catch (Exception ex) {
         System.out.printf("Unable to load population snapshot, error: %s", ex.getMessage());
       }
@@ -360,6 +359,7 @@ public class Generator {
    * simulation. This means that if in the course of the simulation the person dies, a new person
    * will be started to replace them. 
    * The seed used to generate the person is randomized as well.
+   * Note that this method is only used by unit tests.
    * 
    * @param index Target index in the whole set of people to generate
    * @return generated Person
@@ -399,7 +399,7 @@ public class Generator {
 
         if (isAlive && onlyDeadPatients) {
           // rotate the seed so the next attempt gets a consistent but different one
-          personSeed = new Random(personSeed).nextLong();
+          personSeed = randomForDemographics.nextLong();
           continue;
           // skip the other stuff if the patient is alive and we only want dead patients
           // note that this skips ahead to the while check and doesn't automatically re-loop
@@ -407,19 +407,19 @@ public class Generator {
 
         if (!isAlive && onlyAlivePatients) {
           // rotate the seed so the next attempt gets a consistent but different one
-          personSeed = new Random(personSeed).nextLong();
+          personSeed = randomForDemographics.nextLong();
           continue;
           // skip the other stuff if the patient is dead and we only want alive patients
           // note that this skips ahead to the while check and doesn't automatically re-loop
         }
 
         recordPerson(person, index);
-        
+
         tryNumber++;
         if (!isAlive) {
           // rotate the seed so the next attempt gets a consistent but different one
-          personSeed = new Random(personSeed).nextLong();
-          
+          personSeed = randomForDemographics.nextLong();
+
           // if we've tried and failed > 10 times to generate someone over age 90
           // and the options allow for ages as low as 85
           // reduce the age to increase the likelihood of success
@@ -476,23 +476,20 @@ public class Generator {
 
     long time = person.lastUpdated;
     while (person.alive(time) && time < stop) {
-
       healthInsuranceModule.process(person, time + timestep);
       encounterModule.process(person, time);
 
       Iterator<Module> iter = person.currentModules.iterator();
       while (iter.hasNext()) {
         Module module = iter.next();
-        // System.out.format("Processing module %s\n", module.name);
+
         if (module.process(person, time)) {
-          // System.out.format("Removing module %s\n", module.name);
           iter.remove(); // this module has completed/terminated.
         }
       }
-      encounterModule.endWellnessEncounter(person, time);
+      encounterModule.endEncounterModuleEncounters(person, time);
       person.lastUpdated = time;
-      HealthRecordEditors.getInstance().executeAll(
-              person, person.record, time, timestep, person.random);
+      HealthRecordEditors.getInstance().executeAll(person, person.record, time, timestep);
       time += timestep;
     }
 
@@ -523,12 +520,12 @@ public class Generator {
   
   /**
    * Create a set of random demographics.
-   * @param seed The random seed to use
+   * @param random The random number generator to use.
    * @return demographics
    */
-  public Map<String, Object> randomDemographics(Random seed) {
-    Demographics city = location.randomCity(seed);
-    Map<String, Object> demoAttributes = pickDemographics(seed, city);
+  public Map<String, Object> randomDemographics(Random random) {
+    Demographics city = location.randomCity(random);
+    Map<String, Object> demoAttributes = pickDemographics(random, city);
     return demoAttributes;
   }
   
@@ -656,8 +653,8 @@ public class Generator {
   }
   
   private long birthdateFromTargetAge(long targetAge, Random random) {
-    long earliestBirthdate = stop - TimeUnit.DAYS.toMillis((targetAge + 1) * 365L + 1);
-    long latestBirthdate = stop - TimeUnit.DAYS.toMillis(targetAge * 365L);
+    long earliestBirthdate = referenceTime - TimeUnit.DAYS.toMillis((targetAge + 1) * 365L + 1);
+    long latestBirthdate = referenceTime - TimeUnit.DAYS.toMillis(targetAge * 365L);
     return 
         (long) (earliestBirthdate + ((latestBirthdate - earliestBirthdate) * random.nextDouble()));
   }
@@ -670,4 +667,54 @@ public class Generator {
         IOCase.INSENSITIVE);
     return path -> filenameFilter.accept(null, path);
   }
+
+  /**
+   * Returns a random double.
+   */
+  public double rand() {
+    return random.nextDouble();
+  }
+
+  /**
+   * Returns a random boolean.
+   */
+  public boolean randBoolean() {
+    return random.nextBoolean();
+  }
+
+  /**
+   * Returns a random integer.
+   */
+  public int randInt() {
+    return random.nextInt();
+  }
+
+  /**
+   * Returns a random integer in the given bound.
+   */
+  public int randInt(int bound) {
+    return random.nextInt(bound);
+  }
+
+  /**
+   * Returns a double from a normal distribution.
+   */
+  public double randGaussian() {
+    return random.nextGaussian();
+  }
+
+  /**
+   * Return a random long.
+   */
+  public long randLong() {
+    return random.nextLong();
+  }
+  
+  /**
+   * Return a random UUID.
+   */
+  public UUID randUUID() {
+    return new UUID(randLong(), randLong());
+  }
+  
 }

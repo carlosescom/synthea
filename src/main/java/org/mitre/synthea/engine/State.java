@@ -31,8 +31,10 @@ import org.mitre.synthea.engine.Transition.DistributedTransition;
 import org.mitre.synthea.engine.Transition.DistributedTransitionOption;
 import org.mitre.synthea.engine.Transition.LookupTableTransition;
 import org.mitre.synthea.engine.Transition.LookupTableTransitionOption;
+import org.mitre.synthea.helpers.Config;
 import org.mitre.synthea.helpers.ConstantValueGenerator;
 import org.mitre.synthea.helpers.ExpressionProcessor;
+import org.mitre.synthea.helpers.RandomNumberGenerator;
 import org.mitre.synthea.helpers.RandomValueGenerator;
 import org.mitre.synthea.helpers.TimeSeriesData;
 import org.mitre.synthea.helpers.Utilities;
@@ -65,6 +67,9 @@ public abstract class State implements Cloneable, Serializable {
   private List<ComplexTransitionOption> complexTransition;
   private List<LookupTableTransitionOption> lookupTableTransition;
   public List<String> remarks;
+  
+  public static boolean ENABLE_PHYSIOLOGY_STATE =
+      Config.getAsBoolean("physiology.state.enabled", false);
 
   protected void initialize(Module module, String name, JsonObject definition) {
     this.module = module;
@@ -164,7 +169,6 @@ public abstract class State implements Cloneable, Serializable {
    *         should halt for this time step.
    */
   public boolean run(Person person, long time) {
-    // System.out.format("State: %s\n", this.name);
     if (!person.alive(time)) {
       return false;
     }
@@ -174,10 +178,10 @@ public abstract class State implements Cloneable, Serializable {
     boolean exit = process(person, time);
 
     if (exit) {
-      // Delay state returns a special value for exited,
-      // to indicate when the delay actually completed.
-      if (this instanceof Delay) {
-        this.exited = ((Delay)this).next;
+      // Delayable states return a special value for exited,
+      // to indicate when the state actually completed.
+      if (this instanceof Delayable) {
+        this.exited = ((Delayable)this).next;
       } else {
         this.exited = time;
       }
@@ -256,6 +260,7 @@ public abstract class State implements Cloneable, Serializable {
         encounter = person.getCurrentEncounter(submod);
         if (encounter != null) {
           person.setCurrentEncounter(module, encounter);
+          person.setCurrentEncounter(submod, null);
         }
         return true;
       } else {
@@ -282,8 +287,10 @@ public abstract class State implements Cloneable, Serializable {
     private double stepSize;
     private double simDuration;
     private double leadTime;
+    private String altDirectTransition;
     private List<IoMapper> inputs;
     private List<IoMapper> outputs;
+    private Transition altTransition;
     private transient PhysiologySimulator simulator;
     private transient Map<String,String> paramTypes;
     
@@ -291,12 +298,21 @@ public abstract class State implements Cloneable, Serializable {
     protected void initialize(Module module, String name, JsonObject definition) {
       super.initialize(module, name, definition);
       
+      if (altDirectTransition == null || altDirectTransition == "") {
+        throw new RuntimeException("All Physiology States MUST have an alt_direct_transition"
+            + " defined in the event that Physiology States are disabled.");
+      }
+      
+      this.altTransition = new DirectTransition(altDirectTransition);
+      
       if (leadTime > simDuration) {
         throw new IllegalArgumentException(
             "Simulation lead time cannot be greater than sim duration!");
       }
 
-      setup();
+      if (ENABLE_PHYSIOLOGY_STATE) {
+        setup();
+      }
     }
     
     private void setup() {
@@ -321,13 +337,14 @@ public abstract class State implements Cloneable, Serializable {
 
     @Override
     public Physiology clone() {
-      super.clone();
       Physiology clone = (Physiology) super.clone();
       clone.model = model;
       clone.solver = solver;
       clone.stepSize = stepSize;
       clone.simDuration = simDuration;
       clone.leadTime = leadTime;
+      clone.altDirectTransition = altDirectTransition;
+      clone.altTransition = altTransition;
       
       List<IoMapper> inputList = new ArrayList<IoMapper>(inputs.size());
       for (IoMapper mapper : inputs) {
@@ -340,14 +357,19 @@ public abstract class State implements Cloneable, Serializable {
         outputList.add(new IoMapper(mapper));
       }
       clone.outputs = outputList;
-      
-      clone.setup();
-      
+
+      if (ENABLE_PHYSIOLOGY_STATE) {
+        clone.setup();
+      }
+
       return clone;
     }
 
     @Override
     public boolean process(Person person, long time) {
+      if (!ENABLE_PHYSIOLOGY_STATE) {
+        return true;
+      }
       Map<String,Double> modelInputs = new HashMap<String,Double>();
       for (IoMapper mapper : inputs) {
         mapper.toModelInputs(person, time, modelInputs);
@@ -375,6 +397,24 @@ public abstract class State implements Cloneable, Serializable {
       return true;
     }
     
+    /**
+     * Directs to the normal transition if Physiology states are enabled. Otherwise
+     * directs to the alternative direct transition.
+     * 
+     * @param person
+     *          the person being simulated
+     * @param time
+     *          the date within the simulated world
+     * @return next state
+     */
+    public String transition(Person person, long time) {
+      if (ENABLE_PHYSIOLOGY_STATE) {
+        return super.transition(person, time);
+      }
+      
+      return altTransition.follow(person, time);
+    }
+    
   }
 
   /**
@@ -387,6 +427,39 @@ public abstract class State implements Cloneable, Serializable {
     @Override
     public boolean process(Person person, long time) {
       return false;
+    }
+  }
+
+  public abstract static class Delayable extends State {
+    // next is "transient" in the sense that it represents object state
+    // as opposed to the other fields which represent object definition
+    // hence it is not set in clone()
+    public Long next;
+
+    public abstract long endOfDelay(long time, Person person);
+
+    /**
+     * Process any aspect of this state which should only happen once.
+     * Because of the nature of Delay states, this state may get called
+     * multiple times: once per timestep while delaying. To ensure
+     * any actions which are supposed to happen only happen once,
+     * this function should be overriden in subclasses.
+     *
+     * @param person the person being simulated
+     * @param time the date within the simulated world
+     */
+    public void processOnce(Person person, long time) {
+      // do nothing. allow subclasses to override
+    }
+
+    @Override
+    public boolean process(Person person, long time) {
+      if (this.next == null) {
+        this.processOnce(person, time);
+        this.next = this.endOfDelay(time, person);
+      }
+
+      return ((time >= this.next) && person.alive(this.next));
     }
   }
 
@@ -405,15 +478,9 @@ public abstract class State implements Cloneable, Serializable {
    * state that it can't pass through, it will process it once more using the original (7-day time
    * step) time.
    */
-  public static class Delay extends State {
-    // next is "transient" in the sense that it represents object state
-    // as opposed to the other fields which represent object definition
-    // hence it is not set in clone()
-    public Long next;
-
+  public static class Delay extends Delayable {
     private RangeWithUnit<Long> range;
     private ExactWithUnit<Long> exact;
-
 
     @Override
     public Delay clone() {
@@ -424,21 +491,16 @@ public abstract class State implements Cloneable, Serializable {
     }
 
     @Override
-    public boolean process(Person person, long time) {
-      if (this.next == null) {
-        if (exact != null) {
-          // use an exact quantity
-          this.next = time + Utilities.convertTime(exact.unit, exact.quantity);
-        } else if (range != null) {
-          // use a range
-          this.next =
-              time + Utilities.convertTime(range.unit, (long) person.rand(range.low, range.high));
-        } else {
-          throw new RuntimeException("Delay state has no exact or range: " + this);
-        }
+    public long endOfDelay(long time, Person person) {
+      if (exact != null) {
+        // use an exact quantity
+        return time + Utilities.convertTime(exact.unit, exact.quantity);
+      } else if (range != null) {
+        // use a range
+        return time + Utilities.convertTime(range.unit, (long) person.rand(range.low, range.high));
+      } else {
+        throw new RuntimeException("Delay state has no exact or range: " + this);
       }
-
-      return ((time >= this.next) && person.alive(this.next));
     }
   }
 
@@ -485,6 +547,7 @@ public abstract class State implements Cloneable, Serializable {
   public static class SetAttribute extends State {
     private String attribute;
     private Object value;
+    private Range<Double> range;
     private String expression;
     private transient ThreadLocal<ExpressionProcessor> threadExpProcessor;
     private String seriesData;
@@ -529,8 +592,10 @@ public abstract class State implements Cloneable, Serializable {
       SetAttribute clone = (SetAttribute) super.clone();
       clone.attribute = attribute;
       clone.value = value;
+      clone.range = range;
       clone.expression = expression;
-      clone.threadExpProcessor = threadExpProcessor;
+      // We shouldn't clone thread local objects since the application is multi-threaded.
+      // clone.threadExpProcessor = threadExpProcessor;
       clone.seriesData = seriesData;
       clone.period = period;
       return clone;
@@ -541,6 +606,8 @@ public abstract class State implements Cloneable, Serializable {
       ThreadLocal<ExpressionProcessor> expProcessor = getExpProcessor();
       if (expProcessor.get() != null) {
         value = expProcessor.get().evaluate(person, time);
+      } else if (range != null) {
+        value = person.rand(range.low, range.high, range.decimals);
       } else if (seriesData != null) {
         String[] items = seriesData.split(" ");
         TimeSeriesData data = new TimeSeriesData(items.length, period);
@@ -555,8 +622,8 @@ public abstract class State implements Cloneable, Serializable {
         }
         
         value = data;
-      } 
-      
+      }
+
       if (value != null) {
         person.attributes.put(attribute, value);
       } else if (person.attributes.containsKey(attribute)) {
@@ -603,7 +670,9 @@ public abstract class State implements Cloneable, Serializable {
     public boolean process(Person person, long time) {
       int counter = 0;
       if (person.attributes.containsKey(attribute)) {
-        counter = (int) person.attributes.get(attribute);
+        // this cast as int from double is to handle cases where the attribute
+        // is either a java.lang.Double or java.lang.Integer
+        counter = (int) Double.parseDouble(person.attributes.get(attribute).toString());
       }
 
       if (increment) {
@@ -818,16 +887,17 @@ public abstract class State implements Cloneable, Serializable {
     @Override
     public boolean process(Person person, long time) {
       HealthRecord.Encounter encounter = person.getCurrentEncounter(module);
-      EncounterType type = EncounterType.fromString(encounter.type);
-      if (type != EncounterType.WELLNESS) {
-        person.record.encounterEnd(time, type);
+      if (encounter != null) {
+        EncounterType type = EncounterType.fromString(encounter.type);
+        if (type != EncounterType.WELLNESS) {
+          person.record.encounterEnd(time, type);
+        }
+        encounter.discharge = dischargeDisposition;
       }
-      encounter.discharge = dischargeDisposition;
 
       // reset current provider hash
       person.removeCurrentProvider(module.name);
       person.setCurrentEncounter(module, null);
-
       return true;
     }
   }
@@ -1037,7 +1107,7 @@ public abstract class State implements Cloneable, Serializable {
   public static class MedicationOrder extends State {
     private List<Code> codes;
     private String reason;
-    private transient JsonObject prescription; // TODO make this a Component
+    private JsonObject prescription; // TODO make this a Component
     private String assignToAttribute;
     private boolean administration;
     private boolean chronic;
@@ -1048,7 +1118,11 @@ public abstract class State implements Cloneable, Serializable {
      * @param oos the stream to write to
      */
     private void writeObject(ObjectOutputStream oos) throws IOException {
-      oos.defaultWriteObject();
+      oos.writeObject(codes);
+      oos.writeObject(reason);
+      oos.writeObject(assignToAttribute);
+      oos.writeBoolean(administration);
+      oos.writeBoolean(chronic);
       if (prescription != null) {
         oos.writeObject(prescription.toString());
       } else {
@@ -1062,7 +1136,11 @@ public abstract class State implements Cloneable, Serializable {
      * @param ois the stream to read from
      */
     private void readObject(ObjectInputStream ois) throws ClassNotFoundException, IOException {
-      ois.defaultReadObject();
+      codes = (List<Code>)ois.readObject();
+      reason = (String)ois.readObject();
+      assignToAttribute = (String)ois.readObject();
+      administration = ois.readBoolean();
+      chronic = ois.readBoolean();
       String prescriptionJson = (String) ois.readObject();
       if (prescriptionJson != null) {
         Gson gson = Utilities.getGson();
@@ -1276,11 +1354,12 @@ public abstract class State implements Cloneable, Serializable {
    * Optionally, you may define a duration of time that the procedure takes. The Procedure also
    * supports identifying a previous ConditionOnset or an attribute as the reason for the procedure.
    */
-  public static class Procedure extends State {
+  public static class Procedure extends Delayable {
     private List<Code> codes;
     private String reason;
     private RangeWithUnit<Long> duration;
     private String assignToAttribute;
+    private Long stop;
 
     @Override
     public Procedure clone() {
@@ -1293,7 +1372,16 @@ public abstract class State implements Cloneable, Serializable {
     }
 
     @Override
-    public boolean process(Person person, long time) {
+    public long endOfDelay(long time, Person person) {
+      if (duration == null) {
+        return time;
+      } else {
+        return this.stop;
+      }
+    }
+
+    @Override
+    public void processOnce(Person person, long time) {
       String primaryCode = codes.get(0).code;
       HealthRecord.Procedure procedure = person.record.procedure(time, primaryCode);
       entry = procedure;
@@ -1315,9 +1403,10 @@ public abstract class State implements Cloneable, Serializable {
           }
         }
       }
-      if (duration != null) {
+      if (duration != null && this.stop == null) {
         double durationVal = person.rand(duration.low, duration.high);
-        procedure.stop = procedure.start + Utilities.convertTime(duration.unit, (long) durationVal);
+        this.stop = procedure.start + Utilities.convertTime(duration.unit, (long) durationVal);
+        procedure.stop = this.stop;
       }
       // increment number of procedures by respective hospital
       Provider provider;
@@ -1332,8 +1421,6 @@ public abstract class State implements Cloneable, Serializable {
       if (assignToAttribute != null) {
         person.attributes.put(assignToAttribute, procedure);
       }
-
-      return true;
     }
   }
 
@@ -1380,7 +1467,8 @@ public abstract class State implements Cloneable, Serializable {
       clone.vitalSign = vitalSign;
       clone.unit = unit;
       clone.expression = expression;
-      clone.threadExpProcessor = threadExpProcessor;
+      // We shouldn't clone thread local objects since the application is multi-threaded.
+      // clone.threadExpProcessor = threadExpProcessor;
       return clone;
     }
 
@@ -1480,7 +1568,8 @@ public abstract class State implements Cloneable, Serializable {
       clone.category = category;
       clone.unit = unit;
       clone.expression = expression;
-      clone.threadExpProcessor = threadExpProcessor;
+      // We shouldn't clone thread local objects since the application is multi-threaded.
+      // clone.threadExpProcessor = threadExpProcessor;
       clone.attachment = attachment;
       return clone;
     }
@@ -1500,7 +1589,7 @@ public abstract class State implements Cloneable, Serializable {
       } else if (valueCode != null) {
         value = valueCode;
       } else if (threadExpProcessor != null
-    		  && threadExpProcessor.get() != null) {
+          && threadExpProcessor.get() != null) {
         value = threadExpProcessor.get().evaluate(person, time);
       } else if (sampledData != null) {
         // Capture the data lists from person attributes
@@ -1638,8 +1727,8 @@ public abstract class State implements Cloneable, Serializable {
     @Override
     public boolean process(Person person, long time) {
       // Randomly pick number of series and instances if bounds were provided
-      duplicateSeries(person);
-      duplicateInstances(person);
+      duplicateSeries(person, time);
+      duplicateInstances(person, time);
 
       // The modality code of the first series is a good approximation
       // of the type of ImagingStudy this is
@@ -1655,19 +1744,19 @@ public abstract class State implements Cloneable, Serializable {
       return true;
     }
 
-    private void duplicateSeries(Person person) {
+    private void duplicateSeries(RandomNumberGenerator random, long time) {
       if (minNumberSeries > 0 && maxNumberSeries >= minNumberSeries
           && series.size() > 0) {
 
         // Randomly pick the number of series in this study
-        int numberOfSeries = (int) person.rand(minNumberSeries, maxNumberSeries + 1);
+        int numberOfSeries = (int) random.rand(minNumberSeries, maxNumberSeries + 1);
         HealthRecord.ImagingStudy.Series referenceSeries = series.get(0);
         series = new ArrayList<HealthRecord.ImagingStudy.Series>();
 
         // Create the new series with random series UID
         for (int i = 0; i < numberOfSeries; i++) {
           HealthRecord.ImagingStudy.Series newSeries = referenceSeries.clone();
-          newSeries.dicomUid = Utilities.randomDicomUid(i + 1, 0);
+          newSeries.dicomUid = Utilities.randomDicomUid(random, time, i + 1, 0);
           series.add(newSeries);
         }
       } else {
@@ -1681,21 +1770,22 @@ public abstract class State implements Cloneable, Serializable {
       }
     }
 
-    private void duplicateInstances(Person person) {
+    private void duplicateInstances(RandomNumberGenerator random, long time) {
       for (int i = 0; i < series.size(); i++) {
         HealthRecord.ImagingStudy.Series s = series.get(i);
         if (s.minNumberInstances > 0 && s.maxNumberInstances >= s.minNumberInstances
             && s.instances.size() > 0) {
 
           // Randomly pick the number of instances in this series
-          int numberOfInstances = (int) person.rand(s.minNumberInstances, s.maxNumberInstances + 1);
+          int numberOfInstances =
+              (int) random.rand(s.minNumberInstances, s.maxNumberInstances + 1);
           HealthRecord.ImagingStudy.Instance referenceInstance = s.instances.get(0);
           s.instances = new ArrayList<HealthRecord.ImagingStudy.Instance>();
 
           // Create the new instances with random instance UIDs
           for (int j = 0; j < numberOfInstances; j++) {
             HealthRecord.ImagingStudy.Instance newInstance = referenceInstance.clone();
-            newInstance.dicomUid = Utilities.randomDicomUid(i + 1, j + 1);
+            newInstance.dicomUid = Utilities.randomDicomUid(random, time, i + 1, j + 1);
             s.instances.add(newInstance);
           }
         }
@@ -1794,7 +1884,7 @@ public abstract class State implements Cloneable, Serializable {
       if (assignToAttribute != null) {
         person.attributes.put(assignToAttribute, device);
       }
-      
+
       return true;
     }
   }
@@ -1828,23 +1918,24 @@ public abstract class State implements Cloneable, Serializable {
       } else if (referencedByAttribute != null) {
         HealthRecord.Device deviceEntry = (HealthRecord.Device) person.attributes
                 .get(referencedByAttribute);
-        deviceEntry.stop = time;
-        person.record.deviceRemove(time, deviceEntry.type);
+        if (deviceEntry != null) {
+          deviceEntry.stop = time;
+          person.record.deviceRemove(time, deviceEntry.type);
+        }
       } else if (codes != null) {
         codes.forEach(code -> person.record.deviceRemove(time, code.code));
       }
       return true;
     }
   }
-  
+
   /**
    * The SupplyList state includes a list of supplies that are needed for the current encounter.
    * Supplies may include things like PPE for the physician, or other resources and machines.
    *
    */
   public static class SupplyList extends State {
-    // TODO: make a class for these, when needed beyond just exporting
-    public List<HealthRecord.Supply> supplies;
+    public List<SupplyComponent> supplies;
 
     @Override
     public SupplyList clone() {
@@ -1855,12 +1946,18 @@ public abstract class State implements Cloneable, Serializable {
 
     @Override
     public boolean process(Person person, long time) {
-      HealthRecord.Encounter encounter = person.getCurrentEncounter(module);
-      encounter.supplies.addAll(supplies);
+      for (SupplyComponent s : supplies) {
+        person.record.useSupply(time, s.code, s.quantity);
+      }
       return true;
     }
+
+    private static class SupplyComponent implements Serializable {
+      HealthRecord.Code code;
+      int quantity;
+    }
   }
-  
+
   /**
    * The Death state type indicates a point in the module at which the patient dies or the patient
    * is given a terminal diagnosis (e.g. "you have 3 months to live"). When the Death state is

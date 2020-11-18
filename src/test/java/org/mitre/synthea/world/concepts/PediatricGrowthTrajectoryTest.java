@@ -3,7 +3,6 @@ package org.mitre.synthea.world.concepts;
 import static org.junit.Assert.assertEquals;
 
 import java.util.Map;
-import org.apache.commons.math3.random.JDKRandomGenerator;
 import org.junit.Test;
 import org.mitre.synthea.TestHelper;
 import org.mitre.synthea.helpers.Utilities;
@@ -17,14 +16,13 @@ public class PediatricGrowthTrajectoryTest {
     Person person = new Person(0L);
     person.attributes.put(Person.BIRTHDATE, birthDay);
     person.attributes.put(Person.GENDER, "M");
-    JDKRandomGenerator random = new JDKRandomGenerator(6454);
     PediatricGrowthTrajectory pgt = new PediatricGrowthTrajectory(0L, birthDay);
     // This will be the initial NHANES Sample
     long sampleSimulationTime = pgt.tail().timeInSimulation;
     double initialBMI = pgt.tail().bmi;
     long sixMonthsAfterInitial = sampleSimulationTime + Utilities.convertTime("months", 6);
     // Will cause generateNextYearBMI to be run
-    double sixMonthLaterBMI = pgt.currentBMI(person, sixMonthsAfterInitial, random);
+    double sixMonthLaterBMI = pgt.currentBMI(person, sixMonthsAfterInitial);
     double oneYearLaterBMI = pgt.tail().bmi;
     double bmiDiff = oneYearLaterBMI - initialBMI;
     assertEquals(initialBMI + (0.5 * bmiDiff), sixMonthLaterBMI, 0.01);
@@ -81,7 +79,6 @@ public class PediatricGrowthTrajectoryTest {
     long timeInSim = TestHelper.timestamp(2020, 1, 1, 0, 0, 0);
     double ninetySeventh = 0.97;
     int threeYearsInMonths = 36;
-    double age = 3;
     String sex = "M";
     PediatricGrowthTrajectory pgt = new PediatricGrowthTrajectory(0L, birthDay);
     pgt.addPointFromPercentile(threeYearsInMonths, timeInSim, ninetySeventh, sex);

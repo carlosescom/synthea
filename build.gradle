@@ -40,6 +40,7 @@ dependencies {
   compile 'ca.uhn.hapi.fhir:hapi-fhir-structures-dstu3:4.1.0'
   compile 'ca.uhn.hapi.fhir:hapi-fhir-structures-dstu2:4.1.0'
   compile 'ca.uhn.hapi.fhir:hapi-fhir-structures-r4:4.1.0'
+  compile 'ca.uhn.hapi.fhir:hapi-fhir-client:4.1.0'
   // C-CDA export uses Apache FreeMarker templates
   compile 'org.freemarker:freemarker:2.3.26-incubating'
   compile group: 'com.h2database', name: 'h2', version: '1.4.196'
@@ -52,11 +53,14 @@ dependencies {
   compile group: 'org.yaml', name: 'snakeyaml', version: '1.25'
   compile group: 'org.apache.commons', name: 'commons-math3', version: '3.6.1'
   compile group: 'org.apache.commons', name: 'commons-text', version: '1.2'
+  compile group: 'commons-validator', name: 'commons-validator', version: '1.4.0'
 
   compile group: 'org.opencds.cqf', name: 'cql-engine', version: '1.3.12'
   compile group: 'info.cqframework', name: 'cql', version: '1.3.17'
   compile group: 'info.cqframework', name: 'model', version: '1.3.17'
   compile group: 'info.cqframework', name: 'cql-to-elm', version: '1.3.17'
+  
+  compile group: 'org.springframework', name: 'spring-web', version: '5.2.7.RELEASE'
 
   // Java 9 no longer includes these APIs by default
   compile group: 'javax.xml.bind', name: 'jaxb-api', version: '2.3.0'
@@ -85,6 +89,7 @@ dependencies {
   testCompile 'org.mockito:mockito-core:2.19.0'
   testCompile 'org.powermock:powermock-module-junit4:1.7.1'
   testCompile 'org.powermock:powermock-api-mockito2:1.7.1'
+  testCompile 'com.github.tomakehurst:wiremock-jre8:2.26.3'
   testCompile 'ca.uhn.hapi.fhir:hapi-fhir-validation:4.1.0'
   testCompile 'ca.uhn.hapi.fhir:hapi-fhir-validation-resources-dstu3:4.1.0'
   testCompile 'ca.uhn.hapi.fhir:hapi-fhir-validation-resources-dstu2:4.1.0'
@@ -97,6 +102,10 @@ dependencies {
 test {
   testLogging {
     exceptionFormat = 'full'
+    // showExceptions = true
+    // showCauses = true
+    // showStackTraces = true
+    // showStandardStreams = true
   }
   maxHeapSize = "2048m"
 }
@@ -155,6 +164,15 @@ task concepts(type: JavaExec) {
   description 'Create a list of simulated concepts'
   classpath sourceSets.main.runtimeClasspath
   main = "org.mitre.synthea.helpers.Concepts"
+  args 'false'
+}
+
+task conceptswithoutcosts(type: JavaExec) {
+  group 'Application'
+  description 'Create a list of simulated concepts without costs'
+  classpath sourceSets.main.runtimeClasspath
+  main = "org.mitre.synthea.helpers.Concepts"
+  args 'true'
 }
 
 task attributes(type: JavaExec) {
@@ -229,6 +247,10 @@ run {
   if (project.hasProperty("arams")) {
     args Eval.me(arams)
   }
+  def maxHeapSizeVar = System.getenv("MAX_HEAP_SIZE")
+  if (maxHeapSizeVar != null) {
+    maxHeapSize = maxHeapSizeVar
+  }
 }
 
 task sourceJar(type: Jar) {
@@ -248,7 +270,7 @@ artifacts {
 }
 
 def mavenGroup = 'org.mitre.synthea'
-def mavenVersion = '2.6.0-SNAPSHOT'
+def mavenVersion = '3.0.0-SNAPSHOT'
 
 publishing {
     publications {

@@ -22,6 +22,8 @@ import org.hl7.fhir.r4.model.Media;
 import org.hl7.fhir.r4.model.Observation;
 import org.hl7.fhir.r4.model.Quantity;
 import org.hl7.fhir.r4.model.SampledData;
+import org.junit.After;
+import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
@@ -42,11 +44,31 @@ import org.mockito.Mockito;
  * Uses HAPI FHIR project to validate FHIR export. http://hapifhir.io/doc_validation.html
  */
 public class FHIRR4ExporterTest {
+  private boolean physStateEnabled;
+  
   /**
    * Temporary folder for any exported files, guaranteed to be deleted at the end of the test.
    */
   @Rule
   public TemporaryFolder tempFolder = new TemporaryFolder();
+  
+  /**
+   * Setup state for exporter test.
+   */
+  @Before
+  public void setup() {
+    // Ensure Physiology state is enabled
+    physStateEnabled = State.ENABLE_PHYSIOLOGY_STATE;
+    State.ENABLE_PHYSIOLOGY_STATE = true;
+  }
+  
+  /**
+   * Reset state after exporter test.
+   */
+  @After
+  public void tearDown() {
+    State.ENABLE_PHYSIOLOGY_STATE = physStateEnabled;
+  }
   
   @Test
   public void testDecimalRounding() {
@@ -89,8 +111,8 @@ public class FHIRR4ExporterTest {
       int x = validationErrors.size();
       TestHelper.exportOff();
       Person person = generator.generatePerson(i);
-      FhirR4.TRANSACTION_BUNDLE = person.random.nextBoolean();
-      FhirR4.USE_US_CORE_IG = person.random.nextBoolean();
+      FhirR4.TRANSACTION_BUNDLE = person.randBoolean();
+      FhirR4.USE_US_CORE_IG = person.randBoolean();
       FhirR4.USE_SHR_EXTENSIONS = false;
       String fhirJson = FhirR4.convertToFHIRJson(person, System.currentTimeMillis());
       // Check that the fhirJSON doesn't contain unresolved SNOMED-CT strings
@@ -177,7 +199,7 @@ public class FHIRR4ExporterTest {
 
     person.history = new LinkedList<>();
     Provider mock = Mockito.mock(Provider.class);
-    mock.uuid = "Mock-UUID";
+    Mockito.when(mock.getResourceID()).thenReturn("Mock-UUID");
     person.setProvider(EncounterType.AMBULATORY, mock);
     person.setProvider(EncounterType.WELLNESS, mock);
     person.setProvider(EncounterType.EMERGENCY, mock);
@@ -239,7 +261,7 @@ public class FHIRR4ExporterTest {
 
     person.history = new LinkedList<>();
     Provider mock = Mockito.mock(Provider.class);
-    mock.uuid = "Mock-UUID";
+    Mockito.when(mock.getResourceID()).thenReturn("Mock-Provider");
     person.setProvider(EncounterType.AMBULATORY, mock);
     person.setProvider(EncounterType.WELLNESS, mock);
     person.setProvider(EncounterType.EMERGENCY, mock);

@@ -2,13 +2,13 @@ package org.mitre.synthea.export;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
+import static org.mitre.synthea.TestHelper.years;
 
 import org.junit.Before;
 import org.junit.Test;
 import org.mitre.synthea.TestHelper;
 import org.mitre.synthea.engine.Generator;
 import org.mitre.synthea.helpers.Config;
-import org.mitre.synthea.helpers.Utilities;
 import org.mitre.synthea.modules.DeathModule;
 import org.mitre.synthea.world.agents.Payer;
 import org.mitre.synthea.world.agents.Person;
@@ -46,7 +46,7 @@ public class ExporterTest {
     TestHelper.loadTestProperties();
     Generator.DEFAULT_STATE = Config.get("test_state.default", "Massachusetts");
     Location location = new Location(Generator.DEFAULT_STATE, null);
-    location.assignPoint(patient, location.randomCityName(patient.random));
+    location.assignPoint(patient, location.randomCityName(patient));
     Provider.loadProviders(location, 1L);
     record = patient.record;
     // Ensure Person's Payer is not null.
@@ -254,8 +254,5 @@ public class ExporterTest {
     assertEquals(1, record.encounters.get(0).claim.items.size());
     assertEquals("something_permanent", record.encounters.get(0).claim.items.get(0).type);
   }
-  
-  private static long years(long numYears) {
-    return Utilities.convertTime("years", numYears);
-  }
+
 }

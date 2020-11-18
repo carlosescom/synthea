@@ -4,7 +4,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.io.File;
-import java.io.IOException;
 import java.nio.file.Files;
 import org.junit.BeforeClass;
 import org.junit.ClassRule;
@@ -70,6 +69,7 @@ public class SymptomCSVExporterTest {
       // the CSV exporter doesn't use the SimpleCSV class to write the data,
       // so we can use it here for a level of validation
       SimpleCSV.parse(csvData);
+      assertTrue(SimpleCSV.isValid(csvData));
 
       count++;
     }

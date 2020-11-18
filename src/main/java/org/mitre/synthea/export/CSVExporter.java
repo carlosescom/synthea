@@ -19,10 +19,12 @@ import java.util.Calendar;
 import java.util.GregorianCalendar;
 import java.util.Locale;
 import java.util.Map;
-import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 
+import org.apache.commons.lang3.StringUtils;
 import org.mitre.synthea.helpers.Config;
+import org.mitre.synthea.helpers.RandomCodeGenerator;
+import org.mitre.synthea.helpers.RandomNumberGenerator;
 import org.mitre.synthea.helpers.Utilities;
 import org.mitre.synthea.modules.QualityOfLifeModule;
 import org.mitre.synthea.world.agents.Clinician;
@@ -101,7 +103,7 @@ public class CSVExporter {
    * Writer for supplies.csv
    */
   private OutputStreamWriter supplies;
-  
+
   /**
    * Writer for organizations.csv
    */
@@ -110,7 +112,7 @@ public class CSVExporter {
    * Writer for providers.csv
    */
   private OutputStreamWriter providers;
-  
+
   /**
    * Writer for payers.csv
    */
@@ -119,7 +121,7 @@ public class CSVExporter {
    * Writer for payerTransitions.csv
    */
   private OutputStreamWriter payerTransitions;
-  
+
   /**
    * Charset for specifying the character set of the output files.
    */
@@ -140,7 +142,7 @@ public class CSVExporter {
       output.mkdirs();
       Path outputDirectory = output.toPath();
 
-      if (Boolean.parseBoolean(Config.get("exporter.csv.folder_per_run"))) {
+      if (Config.getAsBoolean("exporter.csv.folder_per_run")) {
         // we want a folder per run, so name it based on the timestamp
         // TODO: do we want to consider names based on the current generation options?
         String timestamp = ExportHelper.iso8601Timestamp(System.currentTimeMillis());
@@ -151,7 +153,7 @@ public class CSVExporter {
 
       File patientsFile = outputDirectory.resolve("patients.csv").toFile();
       boolean append =
-          patientsFile.exists() && Boolean.parseBoolean(Config.get("exporter.csv.append_mode"));
+          patientsFile.exists() && Config.getAsBoolean("exporter.csv.append_mode");
       patients = new OutputStreamWriter(new FileOutputStream(patientsFile, append), charset);
 
       File allergiesFile = outputDirectory.resolve("allergies.csv").toFile();
@@ -189,7 +191,6 @@ public class CSVExporter {
 
       File suppliesFile = outputDirectory.resolve("supplies.csv").toFile();
       supplies = new OutputStreamWriter(new FileOutputStream(suppliesFile, append), charset);
-
 
       File organizationsFile = outputDirectory.resolve("organizations.csv").toFile();
       File providersFile = outputDirectory.resolve("providers.csv").toFile();
@@ -251,7 +252,7 @@ public class CSVExporter {
     devices.write(NEWLINE);
     supplies.write("DATE,PATIENT,ENCOUNTER,CODE,DESCRIPTION,QUANTITY");
     supplies.write(NEWLINE);
-    
+
     organizations.write("Id,NAME,ADDRESS,CITY,STATE,ZIP,LAT,LON,PHONE,REVENUE,UTILIZATION");
     organizations.write(NEWLINE);
     providers.write("Id,ORGANIZATION,NAME,GENDER,SPECIALITY,ADDRESS,CITY,STATE,ZIP,LAT,LON,"
@@ -280,7 +281,7 @@ public class CSVExporter {
 
   /**
    * Get the current instance of the CSVExporter.
-   * 
+   *
    * @return the current instance of the CSVExporter.
    */
   public static CSVExporter getInstance() {
@@ -291,7 +292,7 @@ public class CSVExporter {
    * Export the organizations.csv and providers.csv files. This method should be
    * called once after all the Patient records have been exported using the
    * export(Person,long) method.
-   * 
+   *
    * @throws IOException if any IO errors occur.
    */
   public void exportOrganizationsAndProviders() throws IOException {
@@ -318,7 +319,7 @@ public class CSVExporter {
   /**
    * Export the payers.csv file. This method should be called once after all the
    * Patient records have been exported using the export(Person,long) method.
-   * 
+   *
    * @throws IOException if any IO errors occur.
    */
   public void exportPayers() throws IOException {
@@ -335,7 +336,7 @@ public class CSVExporter {
   /**
    * Export the payerTransitions.csv file. This method should be called once after all the
    * Patient records have been exported using the export(Person,long) method.
-   * 
+   *
    * @throws IOException if any IO errors occur.
    */
   private void exportPayerTransitions(Person person, long stopTime) throws IOException {
@@ -370,7 +371,7 @@ public class CSVExporter {
 
   /**
    * Add a single Person's health record info to the CSV records.
-   * 
+   *
    * @param person Person to write record data for
    * @param time   Time the simulation ended
    * @throws IOException if any IO error occurs
@@ -380,11 +381,21 @@ public class CSVExporter {
 
     for (Encounter encounter : person.record.encounters) {
 
-      String encounterID = encounter(personID, encounter);
+      String encounterID = encounter(person, personID, encounter);
       String payerID = encounter.claim.payer.uuid;
 
       for (HealthRecord.Entry condition : encounter.conditions) {
-        condition(personID, encounterID, condition);
+        /* condition to ignore codes other then retrieved from terminology url */
+        if (!StringUtils.isEmpty(Config.get("generate.terminology_service_url"))
+            && !RandomCodeGenerator.selectedCodes.isEmpty()) {
+          if (RandomCodeGenerator.selectedCodes.stream()
+              .filter(code -> code.code.equals(condition.codes.get(0).code))
+              .findFirst().isPresent()) {
+            condition(personID, encounterID, condition);
+          }
+        } else {
+          condition(personID, encounterID, condition);
+        }
       }
 
       for (HealthRecord.Entry allergy : encounter.allergies) {
@@ -408,17 +419,17 @@ public class CSVExporter {
       }
 
       for (CarePlan careplan : encounter.careplans) {
-        careplan(personID, encounterID, careplan);
+        careplan(person, personID, encounterID, careplan);
       }
 
       for (ImagingStudy imagingStudy : encounter.imagingStudies) {
-        imagingStudy(personID, encounterID, imagingStudy);
+        imagingStudy(person, personID, encounterID, imagingStudy);
       }
-      
+
       for (Device device : encounter.devices) {
         device(personID, encounterID, device);
       }
-      
+
       for (Supply supply : encounter.supplies) {
         supply(personID, encounterID, encounter, supply);
       }
@@ -545,17 +556,19 @@ public class CSVExporter {
   /**
    * Write a single Encounter line to encounters.csv.
    *
+   * @param rand      Source of randomness to use when generating ids etc
    * @param personID  The ID of the person that had this encounter
    * @param encounter The encounter itself
    * @return The encounter ID, to be referenced as a "foreign key" if necessary
    * @throws IOException if any IO error occurs
    */
-  private String encounter(String personID, Encounter encounter) throws IOException {
+  private String encounter(RandomNumberGenerator rand, String personID,
+          Encounter encounter) throws IOException {
     // Id,START,STOP,PATIENT,ORGANIZATION,PROVIDER,PAYER,ENCOUNTERCLASS,CODE,DESCRIPTION,
     // BASE_ENCOUNTER_COST,TOTAL_CLAIM_COST,PAYER_COVERAGE,REASONCODE,REASONDESCRIPTION
     StringBuilder s = new StringBuilder();
 
-    String encounterID = UUID.randomUUID().toString();
+    String encounterID = rand.randUUID().toString();
     // ID
     s.append(encounterID).append(',');
     // START
@@ -874,17 +887,18 @@ public class CSVExporter {
   /**
    * Write a single CarePlan to careplans.csv.
    *
+   * @param rand        Source of randomness to use when generating ids etc
    * @param personID    ID of the person prescribed the careplan.
    * @param encounterID ID of the encounter where the careplan was prescribed
    * @param careplan    The careplan itself
    * @throws IOException if any IO error occurs
    */
-  private String careplan(String personID, String encounterID,
+  private String careplan(RandomNumberGenerator rand, String personID, String encounterID,
       CarePlan careplan) throws IOException {
     // Id,START,STOP,PATIENT,ENCOUNTER,CODE,DESCRIPTION,REASONCODE,REASONDESCRIPTION
     StringBuilder s = new StringBuilder();
 
-    String careplanID = UUID.randomUUID().toString();
+    String careplanID = rand.randUUID().toString();
     s.append(careplanID).append(',');
     s.append(dateFromTimestamp(careplan.start)).append(',');
     if (careplan.stop != 0L) {
@@ -916,18 +930,19 @@ public class CSVExporter {
   /**
    * Write a single ImagingStudy to imaging_studies.csv.
    *
+   * @param rand         Source of randomness to use when generating ids etc
    * @param personID     ID of the person the ImagingStudy was taken of.
    * @param encounterID  ID of the encounter where the ImagingStudy was performed
    * @param imagingStudy The ImagingStudy itself
    * @throws IOException if any IO error occurs
    */
-  private String imagingStudy(String personID, String encounterID,
+  private String imagingStudy(RandomNumberGenerator rand, String personID, String encounterID,
       ImagingStudy imagingStudy) throws IOException {
     // Id,DATE,PATIENT,ENCOUNTER,BODYSITE_CODE,BODYSITE_DESCRIPTION,
     // MODALITY_CODE,MODALITY_DESCRIPTION,SOP_CODE,SOP_DESCRIPTION
     StringBuilder s = new StringBuilder();
 
-    String studyID = UUID.randomUUID().toString();
+    String studyID = rand.randUUID().toString();
     s.append(studyID).append(',');
     s.append(iso8601Timestamp(imagingStudy.start)).append(',');
     s.append(personID).append(',');
@@ -964,31 +979,31 @@ public class CSVExporter {
    * @param device       The Device itself
    * @throws IOException if any IO error occurs
    */
-  private void device(String personID, String encounterID, Device device) 
+  private void device(String personID, String encounterID, Device device)
       throws IOException {
     // START,STOP,PATIENT,ENCOUNTER,CODE,DESCRIPTION,UDI
     StringBuilder s = new StringBuilder();
-    
+
     s.append(iso8601Timestamp(device.start)).append(',');
     if (device.stop != 0L) {
       s.append(iso8601Timestamp(device.stop));
     }
     s.append(',');
-    
+
     s.append(personID).append(',');
     s.append(encounterID).append(',');
-    
+
     Code code = device.codes.get(0);
     s.append(code.code).append(',');
     s.append(clean(code.display)).append(',');
-    
+
     s.append(device.udi);
-    
+
     s.append(NEWLINE);
 
     write(s.toString(), devices);
   }
-  
+
   /**
    * Write a single Supply to supplies.csv.
    *
@@ -1002,23 +1017,24 @@ public class CSVExporter {
     // DATE,PATIENT,ENCOUNTER,CODE,DESCRIPTION,QUANTITY
     StringBuilder s = new StringBuilder();
 
-    s.append(dateFromTimestamp(encounter.start)).append(',');
+    s.append(dateFromTimestamp(supply.start)).append(',');
     s.append(personID).append(',');
     s.append(encounterID).append(',');
 
-    s.append(supply.code.code).append(',');
-    s.append(clean(supply.code.display)).append(',');
+    Code code = supply.codes.get(0);
+    s.append(code.code).append(',');
+    s.append(clean(code.display)).append(',');
 
     s.append(supply.quantity);
 
     s.append(NEWLINE);
-    
+
     write(s.toString(), supplies);
   }
-  
+
   /**
    * Write a single organization to organizations.csv
-   * 
+   *
    * @param org         The organization to be written
    * @param utilization The total number of encounters for the org
    * @throws IOException if any IO error occurs
@@ -1044,7 +1060,7 @@ public class CSVExporter {
 
   /**
    * Write a single clinician to providers.csv
-   * 
+   *
    * @param provider The provider information to be written
    * @param orgId    ID of the organization the provider belongs to
    * @throws IOException if any IO error occurs
@@ -1072,7 +1088,7 @@ public class CSVExporter {
 
   /**
    * Write a single payer to payers.csv.
-   * 
+   *
    * @param payer The payer to be exported.
    * @throws IOException if any IO error occurs.
    */
@@ -1121,7 +1137,7 @@ public class CSVExporter {
 
   /**
    * Write a single range of unchanged payer history to payer_transitions.csv
-   * 
+   *
    * @param person The person whose payer history to write.
    * @param payer The payer of the person's current range of payer history.
    * @param startYear The first year of this payer history.
